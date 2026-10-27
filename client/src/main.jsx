@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const post = (url, body) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+// Stats polling: fast only while a bulk run is in progress, slow otherwise, paused while the tab is hidden.
+const POLL_ACTIVE = 2000;
+const POLL_IDLE = 15000;
+const POLL_ERROR = 30000;
 
 const find = (l, re) => l.field_data?.find((f) => re.test(f.name))?.values?.[0] ?? '—';
 const others = (l) =>
@@ -21,7 +26,7 @@ function Stat({ label, value, hint }) {
   );
 }
 
-function AddLeadForm({ form, busy }) {
+function AddLeadForm({ form, busy, onDone }) {
   const questions = form?.questions ?? [];
   const [f, setF] = useState({});
   const [sending, setSending] = useState(false);
@@ -40,6 +45,7 @@ function AddLeadForm({ form, busy }) {
       if (!r.ok) throw new Error(d.error || `Server error (${r.status}). Check the server is running and try again.`);
       setMsg({ ok: true, text: `Lead created (${d.source === 'webhook' ? 'received via webhook' : 'saved by polling'}).${d.webhook ? ` Webhook POST returned ${d.webhook}.` : ''}` });
       setF({});
+      onDone();
     } catch (err) {
       setMsg({ ok: false, text: err.message });
     }
@@ -100,7 +106,7 @@ function FormPicker({ data, formId, onChange }) {
   );
 }
 
-function BulkSend({ run, formId }) {
+function BulkSend({ run, formId, onChange }) {
   const [n, setN] = useState(10);
   const pct = run.total ? Math.round((run.done / run.total) * 100) : 0;
   const errors = [...new Set(run.errors)];
@@ -112,11 +118,11 @@ function BulkSend({ run, formId }) {
           <label htmlFor="n">Count</label>
           <input id="n" type="number" min="1" value={n} onChange={(e) => setN(e.target.value)} disabled={run.running} />
         </div>
-        <button className="primary" onClick={() => post('/api/fire', { n, form_id: formId })} disabled={run.running}>
+        <button className="primary" onClick={() => post('/api/fire', { n, form_id: formId }).then(onChange)} disabled={run.running}>
           {run.running ? 'Sending…' : 'Send leads'}
         </button>
         <button
-          onClick={() => window.confirm('Delete all stored events and leads?') && post('/api/reset')}
+          onClick={() => window.confirm('Delete all stored events and leads?') && post('/api/reset').then(onChange)}
           disabled={run.running}
         >
           Reset data
@@ -193,12 +199,33 @@ function Dashboard({ onLogout }) {
       .catch(() => setForms({ error: 'Could not load forms. Is the API server running?' }));
   }, []);
 
+  const refresh = useRef(() => {});
   useEffect(() => {
-    const load = () =>
-      fetch('/api/stats').then((r) => (r.status === 401 ? (onLogout(), Promise.reject()) : r.json())).then((d) => { setS(d); setOnline(true); }).catch(() => setOnline(false));
-    load();
-    const t = setInterval(load, 2000);
-    return () => clearInterval(t);
+    let stopped = false, busy = false, timer;
+    const tick = async () => {
+      if (busy) return; // a request is already in flight; it schedules the next one itself
+      busy = true;
+      let next = POLL_IDLE;
+      if (!document.hidden) {
+        try {
+          const r = await fetch('/api/stats');
+          if (r.status === 401) { stopped = true; onLogout(); return; }
+          const d = await r.json();
+          if (!stopped) { setS(d); setOnline(true); }
+          next = d.run?.running ? POLL_ACTIVE : POLL_IDLE;
+        } catch {
+          if (!stopped) setOnline(false);
+          next = POLL_ERROR;
+        }
+      }
+      busy = false;
+      if (!stopped) timer = setTimeout(tick, next);
+    };
+    refresh.current = () => { clearTimeout(timer); tick(); };
+    const onVisible = () => !document.hidden && refresh.current();
+    document.addEventListener('visibilitychange', onVisible);
+    tick();
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
   return (
@@ -230,8 +257,8 @@ function Dashboard({ onLogout }) {
           <div className="grid">
             <div>
               <FormPicker data={forms} formId={formId} onChange={setFormId} />
-              <AddLeadForm form={forms?.forms?.find((x) => x.id === formId)} busy={s.run.running} />
-              <BulkSend run={s.run} formId={formId} />
+              <AddLeadForm form={forms?.forms?.find((x) => x.id === formId)} busy={s.run.running} onDone={() => refresh.current()} />
+              <BulkSend run={s.run} formId={formId} onChange={() => refresh.current()} />
             </div>
             <div className="card">
               <div className="card-head"><h2>Latest leads</h2><span className="sub">last 10</span></div>
