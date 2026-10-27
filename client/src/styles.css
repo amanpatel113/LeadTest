@@ -1,0 +1,56 @@
+:root {
+  --bg: #f5f6f8; --surface: #fff; --border: #e3e6ea; --text: #1a2230; --muted: #667085;
+  --primary: #2457d6; --primary-hover: #1c46ad; --ok: #14804a; --warn: #b54708; --err: #c0262d;
+}
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Sora", system-ui, sans-serif; }
+input, select, button { font-family: inherit; }
+.app { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 14px; }
+.sub { color: var(--muted); margin: 2px 0 0; font-size: 13px; }
+.status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.dot.off { background: var(--err); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.stat { padding: 14px 16px; }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 24px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .hint { color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+.card { padding: 18px; margin-bottom: 16px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+label { font-size: 12px; font-weight: 600; color: var(--muted); }
+input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; width: 100%; }
+input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+button { font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--primary-hover); }
+button.block { width: 100%; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.bulk { display: flex; gap: 8px; align-items: end; }
+.bulk .field { margin: 0; width: 90px; }
+.progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 14px; }
+.progress > div { height: 100%; background: var(--primary); transition: width .3s; }
+.notice { margin-top: 12px; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+.notice.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.notice.err { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); white-space: pre-wrap; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-size: 12px; font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+.badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.badge.webhook { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.badge.poll { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.empty { color: var(--muted); text-align: center; padding: 28px 0; }
+.card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.card-head h2 { margin: 0; }
+.scroll { overflow-x: auto; }
+.login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login .card { width: 100%; max-width: 360px; margin: 0; }
+.status button { padding: 4px 10px; margin-left: 8px; font-size: 12px; }

@@ -1,0 +1,6 @@
+{
+  "name": "server",
+  "type": "module",
+  "scripts": { "dev": "node --watch --env-file=../.env index.js", "setup": "node --env-file=../.env setup.js", "refresh": "node --env-file=../.env refresh-token.js" },
+  "dependencies": { "express": "^4.21.0", "mongodb": "^6.9.0" }
+}

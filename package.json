@@ -1,0 +1,9 @@
+{
+  "name": "meta-webhook-test",
+  "private": true,
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "concurrently -n server,client \"npm run dev -w server\" \"npm run dev -w client\""
+  },
+  "devDependencies": { "concurrently": "^9.0.0" }
+}
