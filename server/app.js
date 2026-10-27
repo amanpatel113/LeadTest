@@ -195,15 +195,21 @@ app.get('/api/forms', async (_req, res) => {
   }
 });
 
-// Plausible value for one form question, used by the bulk sender.
+// Plausible value for one form question, used by the bulk sender. Email and phone are random (not time-derived)
+// so repeated runs never collide on a downstream duplicate check.
+const FIRST = ['Aarav', 'Vivaan', 'Aditya', 'Ananya', 'Diya', 'Isha', 'Kabir', 'Meera', 'Rohan', 'Saanvi', 'Tanvi', 'Yash'];
+const LAST = ['Sharma', 'Patel', 'Mehta', 'Iyer', 'Nair', 'Reddy', 'Joshi', 'Kulkarni', 'Singh', 'Gupta', 'Desai', 'Rao'];
+const pick = (list) => list[crypto.randomInt(list.length)];
+const randomPhone = () => `+91${crypto.randomInt(6, 10)}${String(crypto.randomInt(1e9)).padStart(9, '0')}`; // 10 digits, starts 6-9
+const randomEmail = () => `lead.${crypto.randomBytes(5).toString('hex')}@example.com`;
 const sampleValue = (q, seed) => {
   if (q.options?.length) return q.options[seed % q.options.length].key;
   const t = `${q.type} ${q.key}`.toUpperCase();
-  if (t.includes('EMAIL')) return `t${Date.now()}${seed}@example.com`;
-  if (t.includes('PHONE')) return `+9198${String(Date.now() + seed).slice(-8)}`;
-  if (t.includes('FIRST')) return 'Test';
-  if (t.includes('LAST')) return `User${seed}`;
-  if (t.includes('NAME')) return `Test ${Date.now()}-${seed}`;
+  if (t.includes('EMAIL')) return randomEmail();
+  if (t.includes('PHONE')) return randomPhone();
+  if (t.includes('FIRST')) return pick(FIRST);
+  if (t.includes('LAST')) return pick(LAST);
+  if (t.includes('NAME')) return `${pick(FIRST)} ${pick(LAST)}`;
   if (t.includes('CITY')) return 'Pune';
   if (t.includes('STATE')) return 'Maharashtra';
   if (t.includes('ZIP') || t.includes('POST')) return '411001';
