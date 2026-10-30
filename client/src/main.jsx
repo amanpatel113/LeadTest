@@ -2,8 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
+// Which Meta app the server talks to; sent with every request. Remembered per browser.
+let currentEnv = 'production';
+try { currentEnv = localStorage.getItem('env') === 'staging' ? 'staging' : 'production'; } catch {}
+const setEnv = (env) => {
+  currentEnv = env;
+  try { localStorage.setItem('env', env); } catch {}
+};
+const api = (url, opts = {}) => fetch(url, { ...opts, headers: { ...opts.headers, 'x-env': currentEnv } });
 const post = (url, body) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 // Stats polling: fast only while a bulk run is in progress, slow otherwise, paused while the tab is hidden.
 const POLL_ACTIVE = 2000;
@@ -181,14 +189,26 @@ function Login({ onSuccess }) {
   );
 }
 
-function Dashboard({ onLogout }) {
+function EnvToggle({ env, onChange }) {
+  return (
+    <div className="env-toggle" role="group" aria-label="Environment">
+      {['production', 'staging'].map((e) => (
+        <button key={e} className={env === e ? 'active' : ''} aria-pressed={env === e} onClick={() => env !== e && onChange(e)}>
+          {e === 'production' ? 'Production' : 'Staging'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Dashboard({ env, onEnv, onLogout }) {
   const [s, setS] = useState(null);
   const [online, setOnline] = useState(true);
   const [forms, setForms] = useState(null);
   const [formId, setFormId] = useState('');
 
   useEffect(() => {
-    fetch('/api/forms')
+    api('/api/forms')
       .then((r) => r.json())
       .then((d) => {
         setForms(d);
@@ -208,7 +228,7 @@ function Dashboard({ onLogout }) {
       let next = POLL_IDLE;
       if (!document.hidden) {
         try {
-          const r = await fetch('/api/stats');
+          const r = await api('/api/stats');
           if (r.status === 401) { stopped = true; onLogout(); return; }
           const d = await r.json();
           if (!stopped) { setS(d); setOnline(true); }
@@ -236,6 +256,7 @@ function Dashboard({ onLogout }) {
           <p className="sub">Meta Lead Ads → webhook → MongoDB</p>
         </div>
         <div className="status">
+          <EnvToggle env={env} onChange={onEnv} />
           <span className={`dot ${online ? '' : 'off'}`} />{online ? 'Server connected' : 'Server unreachable'}
           <button onClick={() => post('/api/logout').then(onLogout)}>Sign out</button>
         </div>
@@ -295,11 +316,17 @@ function Dashboard({ onLogout }) {
 
 function App() {
   const [authed, setAuthed] = useState(null); // null = checking
+  const [env, setEnvState] = useState(currentEnv);
   useEffect(() => {
     fetch('/api/session').then((r) => setAuthed(r.ok)).catch(() => setAuthed(false));
   }, []);
   if (authed === null) return null;
-  return authed ? <Dashboard onLogout={() => setAuthed(false)} /> : <Login onSuccess={() => setAuthed(true)} />;
+  // keyed on env: switching remounts the dashboard, so forms, stats and polling all restart for the other app
+  return authed ? (
+    <Dashboard key={env} env={env} onEnv={(e) => { setEnv(e); setEnvState(e); }} onLogout={() => setAuthed(false)} />
+  ) : (
+    <Login onSuccess={() => setAuthed(true)} />
+  );
 }
 
 createRoot(document.getElementById('root')).render(<App />);

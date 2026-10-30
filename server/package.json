@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "node --watch --env-file=../.env index.js",
     "setup": "node --env-file=../.env setup.js",
-    "refresh": "node --env-file=../.env refresh-token.js"
+    "refresh": "node --env-file=../.env refresh-token.js",
+    "calls": "node --env-file=../.env marketing-calls.js"
   },
   "dependencies": {
     "@vercel/functions": "^3.10.4",

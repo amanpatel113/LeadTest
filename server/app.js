@@ -3,8 +3,24 @@ import express from 'express';
 import crypto from 'node:crypto';
 import { MongoClient } from 'mongodb';
 
-const { MONGO_URI, META_VERIFY_TOKEN, META_APP_SECRET, PAGE_ACCESS_TOKEN, FORM_ID, PAGE_ID, WEBHOOK_URL, AUTH_EMAIL, AUTH_PASSWORD, VERCEL, DELAY_MS = 3000 } = process.env;
+const E = process.env;
+const { MONGO_URI, AUTH_EMAIL, AUTH_PASSWORD, VERCEL, DELAY_MS = 3000 } = E;
 if (!AUTH_EMAIL || !AUTH_PASSWORD) throw new Error('AUTH_EMAIL and AUTH_PASSWORD must be set in the environment');
+
+// Two Meta apps, picked per request from the UI toggle. Each reads its own PRODUCTION_* / STAGING_* variables.
+const REQUIRED = ['META_APP_ID', 'META_APP_SECRET', 'PAGE_ID', 'PAGE_ACCESS_TOKEN'];
+const makeEnv = (name) => {
+  const p = name.toUpperCase();
+  return {
+    name, appSecret: E[`${p}_META_APP_SECRET`], token: E[`${p}_PAGE_ACCESS_TOKEN`], pageId: E[`${p}_PAGE_ID`],
+    verifyToken: E[`${p}_META_VERIFY_TOKEN`], webhookUrl: E[`${p}_WEBHOOK_URL`], // both optional, see /webhook and forwardWebhook
+  };
+};
+const ENVS = { production: makeEnv('production'), staging: makeEnv('staging') };
+const missingVars = Object.keys(ENVS).flatMap((n) => REQUIRED.map((k) => `${n.toUpperCase()}_${k}`)).filter((k) => !E[k]);
+if (missingVars.length) throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+const ENV_LIST = Object.values(ENVS);
+const envFilter = (env) => ({ env: env.name });
 
 // Serverless: no top-level connect. The client is created on first use and reused while the instance is warm.
 let dbPromise;
@@ -26,22 +42,22 @@ const defer = async (promise) => {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const sign = (buf) => 'sha256=' + crypto.createHmac('sha256', META_APP_SECRET).update(buf).digest('hex');
-const graph = (path, method = 'GET', body) =>
-  fetch(`https://graph.facebook.com/v25.0/${path}${path.includes('?') ? '&' : '?'}access_token=${PAGE_ACCESS_TOKEN}`, {
+const sign = (env, buf) => 'sha256=' + crypto.createHmac('sha256', env.appSecret).update(buf).digest('hex');
+const graph = (env, path, method = 'GET', body) =>
+  fetch(`https://graph.facebook.com/v25.0/${path}${path.includes('?') ? '&' : '?'}access_token=${env.token}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body && JSON.stringify(body),
   }).then((r) => r.json());
 
 // Fetch a lead from Graph and store it once (meta_lead_id is unique). Returns true if it was new.
-const saveLead = async (id, source) => {
-  const l = await graph(id);
+const saveLead = async (env, id, source) => {
+  const l = await graph(env, id);
   if (l.error) throw new Error(l.error.message);
   const leads = await col('leads');
   const r = await leads.updateOne(
     { meta_lead_id: l.id },
-    { $setOnInsert: { meta_lead_id: l.id, source, submitted_at: l.created_time, field_data: l.field_data, raw: l, at: new Date() } },
+    { $setOnInsert: { meta_lead_id: l.id, env: env.name, source, submitted_at: l.created_time, field_data: l.field_data, raw: l, at: new Date() } },
     { upsert: true });
   return r.upsertedCount === 1;
 };
@@ -62,7 +78,7 @@ app.use(express.json({ verify: (req, _res, buf) => (req.raw = buf) }));
 // --- auth: one admin login from the environment, stateless signed session cookie ---
 const SESSION_MS = 12 * 60 * 60 * 1000;
 // keyed on the password too, so changing it logs everyone out
-const mac = (s) => crypto.createHmac('sha256', `${META_APP_SECRET}:${AUTH_PASSWORD}`).update(s).digest('base64url');
+const mac = (s) => crypto.createHmac('sha256', `${ENVS.production.appSecret}:${AUTH_PASSWORD}`).update(s).digest('base64url');
 const safeEq = (a, b) => {
   const h = (v) => crypto.createHash('sha256').update(String(v)).digest(); // equal length for timingSafeEqual
   return crypto.timingSafeEqual(h(a), h(b));
@@ -93,14 +109,23 @@ app.post('/api/login', (req, res) => {
 app.post('/api/logout', (req, res) => (res.setHeader('Set-Cookie', cookie(req, '', 0)), res.json({ ok: true })));
 app.get('/api/session', (req, res) => res.sendStatus(isAuthed(req) ? 200 : 401));
 app.use('/api', (req, res, next) => (isAuthed(req) ? next() : res.status(401).json({ error: 'Unauthorized' })));
+// The UI's environment toggle: every /api call below runs against req.env (default production).
+app.use('/api', (req, res, next) => {
+  const name = req.get('x-env') ?? 'production';
+  if (!ENVS[name]) return res.status(400).json({ error: 'Unknown environment' });
+  req.env = ENVS[name];
+  next();
+});
 
+// One webhook URL serves both apps: verification accepts either verify token (if set), and the signature says which app sent it.
 app.get('/webhook', (req, res) =>
-  req.query['hub.verify_token'] === META_VERIFY_TOKEN ? res.type('text').send(req.query['hub.challenge']) : res.sendStatus(403));
+  ENV_LIST.some((e) => e.verifyToken && e.verifyToken === req.query['hub.verify_token']) ? res.type('text').send(req.query['hub.challenge']) : res.sendStatus(403));
 
 app.post('/webhook', async (req, res) => {
-  const valid = req.get('x-hub-signature-256') === sign(req.raw ?? '');
+  const env = ENV_LIST.find((e) => req.get('x-hub-signature-256') === sign(e, req.raw ?? ''));
+  const valid = !!env;
   const events = await col('events');
-  const { insertedId } = await events.insertOne({ at: new Date(), valid, payload: req.body }); // persist first
+  const { insertedId } = await events.insertOne({ at: new Date(), valid, ...(env && { env: env.name }), payload: req.body }); // persist first
   res.sendStatus(200); // always 200, even on a bad signature
   if (!valid) return;
   await defer((async () => {
@@ -108,7 +133,7 @@ app.post('/webhook', async (req, res) => {
       for (const c of entry.changes ?? []) {
         if (c.field !== 'leadgen') continue;
         try {
-          await saveLead(c.value.leadgen_id, 'webhook');
+          await saveLead(env, c.value.leadgen_id, 'webhook');
         } catch (e) {
           await events.updateOne({ _id: insertedId }, { $push: { errors: e.message } });
         }
@@ -131,21 +156,21 @@ const patchRun = async (update) =>
 
 // Meta only dispatches leadgen webhooks to a published app (the dashboard's Test button aside), so for an
 // unpublished app we replay Meta's delivery ourselves: a signed leadgen POST for the real lead id, sent to WEBHOOK_URL.
-const forwardWebhook = async (leadgenId, formId) => {
-  if (!WEBHOOK_URL) return null;
+const forwardWebhook = async (env, leadgenId, formId) => {
+  if (!env.webhookUrl) return null;
   const now = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({
     object: 'page',
-    entry: [{ id: PAGE_ID, time: now, changes: [{ field: 'leadgen', value: { leadgen_id: leadgenId, page_id: PAGE_ID, form_id: formId, created_time: now } }] }],
+    entry: [{ id: env.pageId, time: now, changes: [{ field: 'leadgen', value: { leadgen_id: leadgenId, page_id: env.pageId, form_id: formId, created_time: now } }] }],
   });
-  const r = await fetch(WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sign(body) }, body });
+  const r = await fetch(env.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sign(env, body) }, body });
   return r.status;
 };
 
 // Meta allows one test lead per form: delete the old one, then create. Throws on a Graph error.
-const createTestLead = async (formId, fields) => {
-  for (const old of (await graph(`${formId}/test_leads`)).data ?? []) await graph(old.id, 'DELETE');
-  const r = await graph(`${formId}/test_leads`, 'POST', {
+const createTestLead = async (env, formId, fields) => {
+  for (const old of (await graph(env, `${formId}/test_leads`)).data ?? []) await graph(env, old.id, 'DELETE');
+  const r = await graph(env, `${formId}/test_leads`, 'POST', {
     field_data: Object.entries(fields).map(([name, v]) => ({ name, values: [v] })),
   });
   if (r.error) throw new Error(r.error.user_msg ?? r.error.error_user_msg ?? r.error.message);
@@ -156,18 +181,19 @@ const createTestLead = async (formId, fields) => {
 let adding = false;
 app.post('/api/lead', async (req, res) => {
   if (adding || (await getRun()).running) return res.status(409).json({ error: 'Another send is in progress' });
-  const { form_id = FORM_ID, fields = {} } = req.body;
+  const { env } = req;
+  const { form_id, fields = {} } = req.body;
   adding = true;
   try {
     // validate against the form's own questions: Meta rejects a test lead that omits any of them
-    const { questions = [], error } = await graph(`${form_id}?fields=questions`);
+    const { questions = [], error } = await graph(env, `${form_id}?fields=questions`);
     if (error) throw new Error(error.message);
     const missing = questions.filter((q) => !String(fields[q.key] ?? '').trim()).map((q) => q.label || q.key);
     if (missing.length) return res.status(400).json({ error: `Required: ${missing.join(', ')}` });
-    const id = await createTestLead(form_id, Object.fromEntries(questions.map((q) => [q.key, String(fields[q.key]).trim()])));
-    const webhook = await forwardWebhook(id, form_id).catch((e) => `failed: ${e.message}`);
+    const id = await createTestLead(env, form_id, Object.fromEntries(questions.map((q) => [q.key, String(fields[q.key]).trim()])));
+    const webhook = await forwardWebhook(env, id, form_id).catch((e) => `failed: ${e.message}`);
     await sleep(+DELAY_MS);
-    const viaPoll = await saveLead(id, 'poll');
+    const viaPoll = await saveLead(env, id, 'poll');
     res.json({ id, source: viaPoll ? 'poll' : 'webhook', webhook });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -177,19 +203,20 @@ app.post('/api/lead', async (req, res) => {
 });
 
 // All lead forms on the Page the token belongs to, with their questions (so the UI can render a matching form).
-app.get('/api/forms', async (_req, res) => {
+app.get('/api/forms', async (req, res) => {
+  const { env } = req;
   try {
-    const page = await graph('me?fields=id,name');
+    const page = await graph(env, 'me?fields=id,name');
     if (page.error) throw new Error(page.error.message);
     const forms = [];
     let after = '';
     do {
-      const r = await graph(`${page.id}/leadgen_forms?fields=id,name,status,leads_count,created_time,questions&limit=50${after}`);
+      const r = await graph(env, `${page.id}/leadgen_forms?fields=id,name,status,leads_count,created_time,questions&limit=50${after}`);
       if (r.error) throw new Error(r.error.message);
       forms.push(...(r.data ?? []));
       after = r.paging?.next ? `&after=${r.paging.cursors.after}` : '';
     } while (after);
-    res.json({ page: { id: page.id, name: page.name }, forms, defaultId: FORM_ID });
+    res.json({ page: { id: page.id, name: page.name }, forms, defaultId: null });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -223,7 +250,8 @@ const BUDGET_MS = VERCEL ? 50_000 : Infinity;
 app.post('/api/fire', async (req, res) => {
   const current = await getRun();
   if (current.running) return res.status(409).json(current);
-  const formId = req.body.form_id || FORM_ID;
+  const { env } = req;
+  const formId = req.body.form_id;
   const total = +req.body.n || 1;
   await patchRun({ $set: { ...RUN_IDLE, running: true, total } });
   res.json({ ...RUN_IDLE, running: true, total });
@@ -231,7 +259,7 @@ app.post('/api/fire', async (req, res) => {
     const started = Date.now();
     const fail = (message) => patchRun({ $push: { errors: message } });
     let questions = [], error;
-    try { ({ questions = [], error } = await graph(`${formId}?fields=questions`)); } catch (e) { error = e; }
+    try { ({ questions = [], error } = await graph(env, `${formId}?fields=questions`)); } catch (e) { error = e; }
     if (error) await fail(error.message);
     for (let i = 0; !error && i < total; i++) {
       if (Date.now() - started > BUDGET_MS) {
@@ -240,11 +268,11 @@ app.post('/api/fire', async (req, res) => {
       }
       try {
         // Meta rejects a test lead that omits any form field, so fill every question
-        const id = await createTestLead(formId, Object.fromEntries(questions.map((q) => [q.key, sampleValue(q, i)])));
+        const id = await createTestLead(env, formId, Object.fromEntries(questions.map((q) => [q.key, sampleValue(q, i)])));
         await patchRun({ $inc: { created: 1 } });
-        await forwardWebhook(id, formId).catch((e) => fail(`webhook forward: ${e.message}`));
+        await forwardWebhook(env, id, formId).catch((e) => fail(`webhook forward: ${e.message}`));
         await sleep(+DELAY_MS);
-        if (await saveLead(id, 'poll')) await patchRun({ $inc: { pollSaved: 1 } });
+        if (await saveLead(env, id, 'poll')) await patchRun({ $inc: { pollSaved: 1 } });
       } catch (e) { await fail(e.message); }
       await patchRun({ $inc: { done: 1 } });
     }
@@ -254,31 +282,35 @@ app.post('/api/fire', async (req, res) => {
 
 // Front-door path: signed fake payloads straight at our own webhook (fake leadgen ids fail the Graph fetch).
 app.post('/api/replay', async (req, res) => {
+  const { env } = req;
   const n = +req.body.n || 1;
   const self = `${req.protocol}://${req.get('host')}/webhook`;
   for (let i = 0; i < n; i++) {
-    const body = JSON.stringify({ object: 'page', entry: [{ id: '0', time: Date.now(), changes: [{ field: 'leadgen', value: { leadgen_id: `fake-${Date.now()}-${i}`, form_id: FORM_ID } }] }] });
-    await fetch(self, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sign(body) }, body });
+    const body = JSON.stringify({ object: 'page', entry: [{ id: '0', time: Date.now(), changes: [{ field: 'leadgen', value: { leadgen_id: `fake-${Date.now()}-${i}`, form_id: 'fake' } }] }] });
+    await fetch(self, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sign(env, body) }, body });
   }
   res.json({ sent: n });
 });
 
-app.get('/api/stats', async (_req, res) => {
+app.get('/api/stats', async (req, res) => {
   const [events, leads] = [await col('events'), await col('leads')];
+  const f = envFilter(req.env);
   res.json({
     run: await getRun(),
-    events: await events.countDocuments(),
-    badSignature: await events.countDocuments({ valid: false }),
-    failedFetch: await events.countDocuments({ errors: { $exists: true } }),
-    leads: await leads.countDocuments(),
-    viaWebhook: await leads.countDocuments({ source: 'webhook' }),
-    latest: await leads.find().sort({ at: -1 }).limit(10).project({ raw: 0 }).toArray(),
+    events: await events.countDocuments(f),
+    // a bad signature can't be attributed to an app, so these show under production only
+    badSignature: req.env.name === 'production' ? await events.countDocuments({ valid: false }) : 0,
+    failedFetch: await events.countDocuments({ ...f, errors: { $exists: true } }),
+    leads: await leads.countDocuments(f),
+    viaWebhook: await leads.countDocuments({ ...f, source: 'webhook' }),
+    latest: await leads.find(f).sort({ at: -1 }).limit(10).project({ raw: 0 }).toArray(),
   });
 });
 
-app.post('/api/reset', async (_req, res) => {
-  await (await col('events')).deleteMany({});
-  await (await col('leads')).deleteMany({});
+app.post('/api/reset', async (req, res) => {
+  const f = envFilter(req.env);
+  await (await col('events')).deleteMany(f);
+  await (await col('leads')).deleteMany(f);
   res.json({ ok: true });
 });
 

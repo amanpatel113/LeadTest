@@ -1,5 +1,6 @@
-// Checks with PAGE_ACCESS_TOKEN: node setup.js [--subscribe]. Prints ids only, never a token.
-const { PAGE_ID, PAGE_ACCESS_TOKEN: pt } = process.env;
+// Checks the Page token: node setup.js [--env=production|staging] [--subscribe] (default staging). Prints ids only, never a token.
+const P = (process.argv.find((a) => a.startsWith('--env='))?.slice(6) ?? 'staging').toUpperCase();
+const PAGE_ID = process.env[`${P}_PAGE_ID`], pt = process.env[`${P}_PAGE_ACCESS_TOKEN`];
 const g = async (path, method = 'GET', body) =>
   (await fetch(`https://graph.facebook.com/v25.0/${path}${path.includes('?') ? '&' : '?'}access_token=${pt}`, {
     method,
